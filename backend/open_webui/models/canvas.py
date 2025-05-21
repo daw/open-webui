@@ -1,11 +1,11 @@
 import uuid
 import time
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from sqlalchemy import Column, String, Text, JSON, BigInteger
 from pydantic import BaseModel, ConfigDict
 
-from open_webui.models.database import Base, get_db
+from open_webui.internal.db import Base, get_db
 
 class Canvas(Base):
     __tablename__ = "canvas"
@@ -41,7 +41,7 @@ class CanvasForm(BaseModel):
 
 # Pydantic models for AI interaction
 class CanvasProcessRequest(BaseModel):
-    content: str | dict # Using Union via | for Python 3.10+
+    content: Union[str, dict]
     command: str
     model_id: Optional[str] = None
 
