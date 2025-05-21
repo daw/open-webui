@@ -88,10 +88,12 @@
 	import Placeholder from './Placeholder.svelte';
 	import NotificationToast from '../NotificationToast.svelte';
 	import Spinner from '../common/Spinner.svelte';
+	import { createCanvas } from '$lib/apis/canvases'; // Added for canvas creation
 
 	export let chatIdProp = '';
 
 	let loading = true;
+	let associatedCanvasId: string | null = null; // Added for associated canvas
 
 	const eventTarget = new EventTarget();
 	let controlPane;
@@ -176,9 +178,49 @@
 				const chatInput = document.getElementById('chat-input');
 				chatInput?.focus();
 			} else {
-				await goto('/');
+				// If loadChat returns false (e.g. chat not found), redirect
+				// but only if it's not already on the base path (new chat)
+				if ($page.url.pathname !== '/') {
+					await goto('/');
+				} else {
+					// For new chats, ensure loading is false
+					loading = false;
+					await initNewChat(); // Ensure new chat state is set up
+				}
 			}
 		})();
+	}
+
+	async function openOrCreateCanvas() {
+		if (associatedCanvasId) {
+			goto(`/canvas/${associatedCanvasId}`);
+		} else {
+			try {
+				const canvasTitle =
+					chat?.chat?.title || $chatTitle || ($chatId && $chatId !== 'local' ? `Canvas for Chat ${$chatId.substring(0,8)}` : 'New Canvas');
+				const newCanvas = await createCanvas({
+					title: canvasTitle,
+					chat_id: $chatId && $chatId !== 'local' ? $chatId : null
+				});
+
+				if (newCanvas) {
+					associatedCanvasId = newCanvas.id;
+					// Persist association (optional, for now client-side)
+					if (chat && $chatId && $chatId !== 'local') {
+						// This is where you might update chat.meta or similar
+						// For now, we're just storing it in the component's state
+						// await updateChatById(localStorage.token, $chatId, { meta: { ...chat.chat.meta, canvas_id: newCanvas.id } });
+						console.log(`Canvas ${newCanvas.id} associated with chat ${$chatId}`);
+					}
+					goto(`/canvas/${newCanvas.id}`);
+				} else {
+					toast.error($i18n.t('Failed to create canvas.'));
+				}
+			} catch (error) {
+				console.error('Error creating canvas:', error);
+				toast.error(`${$i18n.t('Error creating canvas')}: ${error.message}`);
+			}
+		}
 	}
 
 	$: if (selectedModels && chatIdProp !== '') {
@@ -799,11 +841,16 @@
 		}
 
 		if ($page.url.searchParams.get('q')) {
-			prompt = $page.url.searchParams.get('q') ?? '';
-
-			if (prompt) {
-				await tick();
-				submitPrompt(prompt);
+			const initialPrompt = $page.url.searchParams.get('q') ?? '';
+			if (initialPrompt.toLowerCase().trim() === 'use canvas' || initialPrompt.toLowerCase().startsWith('use canvas ')) {
+				await openOrCreateCanvas();
+				// prompt will be cleared by submitPrompt logic if needed
+			} else {
+				prompt = initialPrompt;
+				if (prompt) {
+					await tick();
+					submitPrompt(prompt);
+				}
 			}
 		}
 
@@ -825,8 +872,11 @@
 
 	const loadChat = async () => {
 		chatId.set(chatIdProp);
+		associatedCanvasId = null; // Reset on new chat load
+
 		chat = await getChatById(localStorage.token, $chatId).catch(async (error) => {
-			await goto('/');
+			// await goto('/'); // Avoid redirecting from here if chat not found, handle in onMount
+			console.warn(`Chat ${chatIdProp} not found or error loading:`, error.message);
 			return null;
 		});
 
@@ -843,13 +893,21 @@
 				selectedModels =
 					(chatContent?.models ?? undefined) !== undefined
 						? chatContent.models
-						: [chatContent.models ?? ''];
+						: [chatContent.models ?? '']; // Ensure selectedModels is always an array
+				
 				history =
 					(chatContent?.history ?? undefined) !== undefined
 						? chatContent.history
 						: convertMessagesToHistory(chatContent.messages);
 
 				chatTitle.set(chatContent.title);
+				
+				// Try to load associated canvas_id from chat meta (if it were persisted)
+				// For now, this will likely be null unless manually added to chat object
+				if (chatContent?.meta?.canvas_id) {
+					associatedCanvasId = chatContent.meta.canvas_id;
+				}
+
 
 				const userSettings = await getUserSettings(localStorage.token);
 
@@ -1293,21 +1351,45 @@
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		console.log('submitPrompt', userPrompt, $chatId);
 
+		// Handle "use canvas" command
+		if (userPrompt.toLowerCase().trim() === 'use canvas' || userPrompt.toLowerCase().startsWith('use canvas ')) {
+			await openOrCreateCanvas();
+			prompt = ''; // Clear the prompt
+			
+			// Clear the rich text input if it's enabled
+			if (($settings?.richTextInput ?? true) && typeof document !== 'undefined') {
+				const editorElement = document.querySelector('.ProseMirror[contenteditable="true"]');
+				if (editorElement) {
+					editorElement.innerHTML = ''; 
+				}
+			}
+			return; // Prevent normal message submission
+		}
+
 		const messages = createMessagesList(history, history.currentId);
 		const _selectedModels = selectedModels.map((modelId) =>
 			$models.map((m) => m.id).includes(modelId) ? modelId : ''
 		);
+
 		if (JSON.stringify(selectedModels) !== JSON.stringify(_selectedModels)) {
 			selectedModels = _selectedModels;
 		}
-
+		
 		if (userPrompt === '' && files.length === 0) {
 			toast.error($i18n.t('Please enter a prompt'));
 			return;
 		}
-		if (selectedModels.includes('')) {
-			toast.error($i18n.t('Model not selected'));
-			return;
+
+		// Ensure selectedModels is an array and does not contain empty strings if it's not meant to be empty
+		if (!Array.isArray(selectedModels) || selectedModels.some(modelId => modelId === '')) {
+			const availableModels = $models.filter(m => !(m?.info?.meta?.hidden ?? false)).map(m => m.id);
+			if (availableModels.length > 0) {
+				selectedModels = [availableModels[0]]; // Default to first available if selection is invalid
+				toast.info($i18n.t('Model selection was invalid, defaulted to first available model.'));
+			} else {
+				toast.error($i18n.t('Model not selected or no models available.'));
+				return;
+			}
 		}
 
 		if (messages.length != 0 && messages.at(-1).done != true) {
@@ -2077,6 +2159,19 @@
 									bottomPadding={files.length > 0}
 								/>
 							</div>
+						</div>
+						
+						<div class="flex items-center justify-center px-3.5 pb-1 pt-0.5">
+							<button
+								class=" text-xs py-1 px-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 transition-colors"
+								on:click={openOrCreateCanvas}
+								title={$i18n.t('Open or Create Canvas')}
+							>
+								<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4 inline-block mr-1 align-middle">
+									<path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+								</svg>
+								{$i18n.t(associatedCanvasId ? 'Open Canvas' : 'Create Canvas')}
+							</button>
 						</div>
 
 						<div class=" pb-[1rem]">
