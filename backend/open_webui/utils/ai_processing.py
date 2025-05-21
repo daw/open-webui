@@ -3,7 +3,7 @@ from typing import Optional, Union
 
 from fastapi import Request, HTTPException, status
 
-from open_webui.models.user import UserModel
+from open_webui.models.users import UserModel
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.config import DEFAULT_MODELS
 from open_webui.constants import ERROR_MESSAGES

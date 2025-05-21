@@ -10,7 +10,7 @@ from open_webui.models.canvas import (
     CanvasProcessResponse,
 )
 from open_webui.utils.auth import get_verified_user
-from open_webui.models.user import UserModel
+from open_webui.models.users import UserModel
 from open_webui.utils.ai_processing import process_canvas_content_with_ai
 from open_webui.constants import ERROR_MESSAGES
 
